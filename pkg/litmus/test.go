@@ -15,6 +15,8 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -41,6 +43,9 @@ type (
 		// The request path
 		Path string
 
+		// Query is the request query parameters
+		Query url.Values
+
 		// Request is the http request body put on the wire
 		// []byte or string will be posted directly
 		// everything else will be marshalled to json
@@ -52,14 +57,23 @@ type (
 		// ExpectedStatus is the expected http status
 		ExpectedStatus int
 
+		// ExpectedContentType is the expected content-type
+		ExpectedContentType string
+
 		// ExpectedResponse is expected wire response
 		// []byte or string will be posted directly
 		// everything else will be marshalled to json
 		ExpectedResponse interface{}
 
-		// ExpectedContentType is the expected content-type
-		ExpectedContentType string
+		// ExpectedResponseIndex uses the operation argument as the expected response
+		ExpectedResponseIndex *int
 	}
+
+	// Args are test args
+	Args []interface{}
+
+	// Returns are test returns
+	Returns []interface{}
 )
 
 var (
@@ -74,7 +88,15 @@ func (t *Test) Do(backend *mock.Mock, handler http.Handler, tt *testing.T) {
 	}()
 
 	if t.Operation != "" {
-		backend.On(t.Operation, t.OperationArgs...).Return(t.OperationReturns...)
+		args := make([]interface{}, 0)
+		for _, a := range t.OperationArgs {
+			if any, ok := a.(mock.AnythingOfTypeArgument); ok {
+				args = append(args, any)
+			} else {
+				args = append(args, mock.AnythingOfType(reflect.TypeOf(a).String()))
+			}
+		}
+		backend.On(t.Operation, args...).Return(t.OperationReturns...)
 	}
 
 	ts := httptest.NewTLSServer(handler)
@@ -103,6 +125,7 @@ func (t *Test) Do(backend *mock.Mock, handler http.Handler, tt *testing.T) {
 	if err != nil {
 		tt.Fatalf("failed to create request: %s", err.Error())
 	}
+	req.URL.RawQuery = t.Query.Encode()
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -111,14 +134,22 @@ func (t *Test) Do(backend *mock.Mock, handler http.Handler, tt *testing.T) {
 
 	assert.Equal(tt, t.ExpectedStatus, resp.StatusCode)
 
+	if t.ExpectedContentType != "" {
+		assert.Equal(tt, t.ExpectedContentType, resp.Header.Get("Content-Type"))
+	}
+
 	data, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		if err != io.EOF {
-			require.NoError(t, err)
+			require.NoError(tt, err)
 		}
 	}
 
 	var expectedResp string
+
+	if t.ExpectedResponseIndex != nil {
+		t.ExpectedResponse = t.OperationReturns[*t.ExpectedResponseIndex]
+	}
 
 	switch t := t.ExpectedResponse.(type) {
 	case []byte:
