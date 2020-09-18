@@ -51,6 +51,9 @@ type (
 		// everything else will be marshalled to json
 		Request interface{}
 
+		// RequestIndex will use one of the operation parameters as the request
+		RequestIndex *int
+
 		// RequestContentType is the request content type, default application/json
 		RequestContentType string
 
@@ -164,6 +167,10 @@ func (t *Test) Do(backend *mock.Mock, handler http.Handler, tt *testing.T) {
 			tt.Fatalf("failed to marshal response: %s", err.Error())
 		}
 		expectedResp = string(data)
+	}
+
+	if expectedResp == "" {
+		return
 	}
 
 	if len(data) > 0 {
