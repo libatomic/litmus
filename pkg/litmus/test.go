@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kr/pretty"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"github.com/tj/assert"
@@ -109,6 +110,10 @@ func (t *Test) Do(backend *mock.Mock, handler http.Handler, tt *testing.T) {
 
 	var body io.Reader
 
+	if t.RequestIndex != nil {
+		t.Request = t.OperationArgs[*t.RequestIndex]
+	}
+
 	switch t := t.Request.(type) {
 	case []byte:
 		body = bytes.NewReader(t)
@@ -122,6 +127,7 @@ func (t *Test) Do(backend *mock.Mock, handler http.Handler, tt *testing.T) {
 			tt.Fatalf("failed to marshal request: %s", err.Error())
 		}
 		body = bytes.NewReader(data)
+		pretty.Log(string(data))
 	}
 
 	req, err := http.NewRequest(t.Method, ts.URL+t.Path, body)
@@ -167,10 +173,6 @@ func (t *Test) Do(backend *mock.Mock, handler http.Handler, tt *testing.T) {
 			tt.Fatalf("failed to marshal response: %s", err.Error())
 		}
 		expectedResp = string(data)
-	}
-
-	if expectedResp == "" {
-		return
 	}
 
 	if len(data) > 0 {
