@@ -20,23 +20,40 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kr/pretty"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"github.com/tj/assert"
 )
 
 type (
+	// Operation is a backend operation
+	Operation struct {
+		// Name is the operation name
+		Name string
+
+		// Args is the operation args
+		Args []interface{}
+
+		// Returns in the operation returns
+		Returns []interface{}
+	}
+
+	// OperationRef is used to reference on operation
+	OperationRef struct {
+		// Index refers the operation slice index
+		Index int
+
+		// Arg refers to the Args index
+		Arg int
+
+		// Return refers to the Returns index
+		Return int
+	}
+
 	// Test is a test requirements object
 	Test struct {
-		// Operation is the backend api method name
-		Operation string
-
-		// OperationArgs are the expected method arguments
-		OperationArgs []interface{}
-
-		// OperationReturns are the return vars for the api
-		OperationReturns []interface{}
+		// Operations are the backend operations to prepare for test
+		Operations []Operation
 
 		// Method the http method
 		Method string
@@ -49,11 +66,9 @@ type (
 
 		// Request is the http request body put on the wire
 		// []byte or string will be posted directly
+		// if Request is *OperationRef that value will be used
 		// everything else will be marshalled to json
 		Request interface{}
-
-		// RequestIndex will use one of the operation parameters as the request
-		RequestIndex *int
 
 		// RequestContentType is the request content type, default application/json
 		RequestContentType string
@@ -61,16 +76,25 @@ type (
 		// ExpectedStatus is the expected http status
 		ExpectedStatus int
 
+		// ExpectedHeaders are expected response headers
+		ExpectedHeaders map[string]string
+
 		// ExpectedContentType is the expected content-type
 		ExpectedContentType string
 
 		// ExpectedResponse is expected wire response
 		// []byte or string will be posted directly
+		// if Request is *OperationRef that value will be used
 		// everything else will be marshalled to json
 		ExpectedResponse interface{}
 
-		// ExpectedResponseIndex uses the operation argument as the expected response
-		ExpectedResponseIndex *int
+		// Redirect overrides the http client redirect
+		Redirect func(req *http.Request, via []*http.Request)
+	}
+
+	// Values embeds a url values
+	Values struct {
+		q url.Values
 	}
 
 	// Args are test args
@@ -83,6 +107,17 @@ type (
 var (
 	// Context is a mocked context.Context
 	Context = mock.AnythingOfType("*context.valueCtx")
+
+	// OperationArg is a convenience for referencing an arg
+	OperationArg = func(o, a int) *OperationRef { return &OperationRef{Index: o, Arg: a} }
+
+	// OperationReturn is a convenience for referencing a return
+	OperationReturn = func(o, a int) *OperationRef { return &OperationRef{Index: o, Return: a} }
+
+	// NoRedirect forces no redirects
+	NoRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 )
 
 // Do executes the test
@@ -91,16 +126,17 @@ func (t *Test) Do(backend *mock.Mock, handler http.Handler, tt *testing.T) {
 		backend.AssertExpectations(tt)
 	}()
 
-	if t.Operation != "" {
+	for _, o := range t.Operations {
 		args := make([]interface{}, 0)
-		for _, a := range t.OperationArgs {
+		for _, a := range o.Args {
 			if any, ok := a.(mock.AnythingOfTypeArgument); ok {
 				args = append(args, any)
 			} else {
 				args = append(args, mock.AnythingOfType(reflect.TypeOf(a).String()))
 			}
 		}
-		backend.On(t.Operation, args...).Return(t.OperationReturns...)
+		backend.On(o.Name, args...).Return(o.Returns...)
+
 	}
 
 	ts := httptest.NewTLSServer(handler)
@@ -108,26 +144,31 @@ func (t *Test) Do(backend *mock.Mock, handler http.Handler, tt *testing.T) {
 
 	client := ts.Client()
 
-	var body io.Reader
-
-	if t.RequestIndex != nil {
-		t.Request = t.OperationArgs[*t.RequestIndex]
+	if t.Redirect == nil {
+		client.CheckRedirect = NoRedirect
 	}
 
-	switch t := t.Request.(type) {
+	var body io.Reader
+
+	switch m := t.Request.(type) {
 	case []byte:
-		body = bytes.NewReader(t)
+		body = bytes.NewReader(m)
 	case string:
-		body = strings.NewReader(t)
+		body = strings.NewReader(m)
 	case nil:
 		// do nothing
-	default:
-		data, err := json.Marshal(t)
+	case *OperationRef:
+		data, err := json.Marshal(t.Operations[m.Index].Args[m.Arg])
 		if err != nil {
 			tt.Fatalf("failed to marshal request: %s", err.Error())
 		}
 		body = bytes.NewReader(data)
-		pretty.Log(string(data))
+	default:
+		data, err := json.Marshal(m)
+		if err != nil {
+			tt.Fatalf("failed to marshal request: %s", err.Error())
+		}
+		body = bytes.NewReader(data)
 	}
 
 	req, err := http.NewRequest(t.Method, ts.URL+t.Path, body)
@@ -147,6 +188,10 @@ func (t *Test) Do(backend *mock.Mock, handler http.Handler, tt *testing.T) {
 		assert.Equal(tt, t.ExpectedContentType, resp.Header.Get("Content-Type"))
 	}
 
+	for k, v := range t.ExpectedHeaders {
+		assert.Regexp(tt, v, resp.Header.Get(k))
+	}
+
 	data, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		if err != io.EOF {
@@ -156,19 +201,21 @@ func (t *Test) Do(backend *mock.Mock, handler http.Handler, tt *testing.T) {
 
 	var expectedResp string
 
-	if t.ExpectedResponseIndex != nil {
-		t.ExpectedResponse = t.OperationReturns[*t.ExpectedResponseIndex]
-	}
-
-	switch t := t.ExpectedResponse.(type) {
+	switch m := t.ExpectedResponse.(type) {
 	case []byte:
-		expectedResp = string(t)
+		expectedResp = string(m)
 	case string:
-		expectedResp = t
+		expectedResp = m
 	case nil:
 		return
+	case *OperationRef:
+		data, err := json.Marshal(t.Operations[m.Index].Returns[m.Return])
+		if err != nil {
+			tt.Fatalf("failed to marshal response: %s", err.Error())
+		}
+		expectedResp = string(data)
 	default:
-		data, err := json.Marshal(t)
+		data, err := json.Marshal(m)
 		if err != nil {
 			tt.Fatalf("failed to marshal response: %s", err.Error())
 		}
@@ -178,4 +225,20 @@ func (t *Test) Do(backend *mock.Mock, handler http.Handler, tt *testing.T) {
 	if len(data) > 0 {
 		assert.JSONEq(tt, expectedResp, string(data))
 	}
+}
+
+// BeginQuery returns an intialized values
+func BeginQuery() Values {
+	return Values{make(url.Values)}
+}
+
+// Add adds a value
+func (v Values) Add(key, value string) Values {
+	v.q.Add(key, value)
+	return v
+}
+
+// EndQuery returns the query values
+func (v Values) EndQuery() url.Values {
+	return v.q
 }
