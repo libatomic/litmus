@@ -92,6 +92,9 @@ type (
 		Redirect func(req *http.Request, via []*http.Request)
 	}
 
+	// RequestHandler can be used to generate a request body dynamically
+	RequestHandler func(backend interface{}, t *Test) (io.Reader, error)
+
 	// Values embeds a url values
 	Values struct {
 		q url.Values
@@ -163,6 +166,12 @@ func (t *Test) Do(backend *mock.Mock, handler http.Handler, tt *testing.T) {
 			tt.Fatalf("failed to marshal request: %s", err.Error())
 		}
 		body = bytes.NewReader(data)
+	case RequestHandler:
+		b, err := m(backend, t)
+		if err != nil {
+			tt.Fatalf("failed to build request body: %s", err.Error())
+		}
+		body = b
 	default:
 		data, err := json.Marshal(m)
 		if err != nil {
@@ -176,6 +185,12 @@ func (t *Test) Do(backend *mock.Mock, handler http.Handler, tt *testing.T) {
 		tt.Fatalf("failed to create request: %s", err.Error())
 	}
 	req.URL.RawQuery = t.Query.Encode()
+
+	if t.RequestContentType == "" {
+		t.RequestContentType = "application/json"
+	}
+
+	req.Header.Set("Content-Type", t.RequestContentType)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -241,4 +256,9 @@ func (v Values) Add(key, value string) Values {
 // EndQuery returns the query values
 func (v Values) EndQuery() url.Values {
 	return v.q
+}
+
+// Encode encodes the result
+func (v Values) Encode() string {
+	return v.q.Encode()
 }
