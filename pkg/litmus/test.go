@@ -36,6 +36,9 @@ type (
 
 		// Returns in the operation returns
 		Returns []interface{}
+
+		// Optional backend for this operation
+		Backend *mock.Mock
 	}
 
 	// OperationRef is used to reference on operation
@@ -90,6 +93,9 @@ type (
 
 		// Redirect overrides the http client redirect
 		Redirect func(req *http.Request, via []*http.Request)
+
+		// Setup is call before the request is executed
+		Setup func(r *http.Request)
 	}
 
 	// RequestHandler can be used to generate a request body dynamically
@@ -138,8 +144,11 @@ func (t *Test) Do(backend *mock.Mock, handler http.Handler, tt *testing.T) {
 				args = append(args, mock.AnythingOfType(reflect.TypeOf(a).String()))
 			}
 		}
-		backend.On(o.Name, args...).Return(o.Returns...)
-
+		if o.Backend != nil {
+			o.Backend.On(o.Name, args...).Return(o.Returns...)
+		} else {
+			backend.On(o.Name, args...).Return(o.Returns...)
+		}
 	}
 
 	ts := httptest.NewTLSServer(handler)
@@ -192,6 +201,9 @@ func (t *Test) Do(backend *mock.Mock, handler http.Handler, tt *testing.T) {
 
 	req.Header.Set("Content-Type", t.RequestContentType)
 
+	if t.Setup != nil {
+		t.Setup(req)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		tt.Fatalf("failed to execute request: %s", err.Error())
