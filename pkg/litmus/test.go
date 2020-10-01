@@ -118,19 +118,19 @@ var (
 	Context = mock.AnythingOfType("*context.valueCtx")
 
 	// OperationArg is a convenience for referencing an arg
-	OperationArg = func(o int, a ...int) *OperationRef {
-		if len(a) > 0 {
-			return &OperationRef{Index: a[0], Arg: o}
+	OperationArg = func(a int, o ...int) *OperationRef {
+		if len(o) > 0 {
+			return &OperationRef{Index: o[0], Arg: a}
 		}
-		return &OperationRef{Index: 0, Arg: o}
+		return &OperationRef{Index: 0, Arg: a}
 	}
 
 	// OperationReturn is a convenience for referencing a return
-	OperationReturn = func(o int, a ...int) *OperationRef {
-		if len(a) > 0 {
-			return &OperationRef{Index: a[0], Return: o}
+	OperationReturn = func(r int, o ...int) *OperationRef {
+		if len(o) > 0 {
+			return &OperationRef{Index: o[0], Return: r}
 		}
-		return &OperationRef{Index: 0, Return: o}
+		return &OperationRef{Index: 0, Return: r}
 	}
 
 	// NoRedirect forces no redirects
