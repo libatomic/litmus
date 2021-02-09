@@ -17,6 +17,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -26,6 +28,13 @@ import (
 )
 
 type (
+	// Mock is the litmus mock wrapper
+	Mock struct {
+		mock.Mock
+
+		t *Test
+	}
+
 	// Operation is a backend operation
 	Operation struct {
 		// Name is the operation name
@@ -37,8 +46,13 @@ type (
 		// Returns in the operation returns
 		Returns []interface{}
 
+		// ReturnStack handles a return stack for multiple calls
+		ReturnStack [][]interface{}
+
 		// Optional backend for this operation
 		Backend *mock.Mock
+
+		call *mock.Call
 	}
 
 	// OperationRef is used to reference on operation
@@ -111,6 +125,9 @@ type (
 
 	// Returns are test returns
 	Returns []interface{}
+
+	// ReturnStack handles a return stack
+	ReturnStack [][]interface{}
 )
 
 var (
@@ -140,12 +157,14 @@ var (
 )
 
 // Do executes the test
-func (t *Test) Do(backend *mock.Mock, handler http.Handler, tt *testing.T) {
+func (t *Test) Do(backend *Mock, handler http.Handler, tt *testing.T) {
 	defer func() {
 		backend.AssertExpectations(tt)
 	}()
 
-	for _, o := range t.Operations {
+	backend.t = t
+
+	for i, o := range t.Operations {
 		args := make([]interface{}, 0)
 		for _, a := range o.Args {
 			if any, ok := a.(mock.AnythingOfTypeArgument); ok {
@@ -154,11 +173,17 @@ func (t *Test) Do(backend *mock.Mock, handler http.Handler, tt *testing.T) {
 				args = append(args, mock.AnythingOfType(reflect.TypeOf(a).String()))
 			}
 		}
-		if o.Backend != nil {
-			o.Backend.On(o.Name, args...).Return(o.Returns...)
-		} else {
-			backend.On(o.Name, args...).Return(o.Returns...)
+		returns := o.Returns
+		if returns == nil && len(o.ReturnStack) > 0 {
+			returns = o.ReturnStack[len(o.ReturnStack)-1]
 		}
+		if o.Backend != nil {
+			o.call = o.Backend.On(o.Name, args...).Return(returns...)
+		} else {
+			o.call = backend.On(o.Name, args...).Return(returns...)
+		}
+
+		t.Operations[i] = o
 	}
 
 	ts := httptest.NewTLSServer(handler)
@@ -262,6 +287,48 @@ func (t *Test) Do(backend *mock.Mock, handler http.Handler, tt *testing.T) {
 	if len(data) > 0 {
 		assert.JSONEq(tt, expectedResp, string(data))
 	}
+}
+
+// Called tells the mock object that a method has been called, and gets an array
+// of arguments to return.  Panics if the call is unexpected (i.e. not preceded by
+// appropriate .On .Return() calls)
+// If Call.WaitFor is set, blocks until the channel is closed or receives a message.
+func (m *Mock) Called(arguments ...interface{}) mock.Arguments {
+	// get the calling function's name
+	pc, _, _, ok := runtime.Caller(1)
+	if !ok {
+		panic("Couldn't get the caller information")
+	}
+	functionPath := runtime.FuncForPC(pc).Name()
+	//Next four lines are required to use GCCGO function naming conventions.
+	//For Ex:  github_com_docker_libkv_store_mock.WatchTree.pN39_github_com_docker_libkv_store_mock.Mock
+	//uses interface information unlike golang github.com/docker/libkv/store/mock.(*Mock).WatchTree
+	//With GCCGO we need to remove interface information starting from pN<dd>.
+	re := regexp.MustCompile("\\.pN\\d+_")
+	if re.MatchString(functionPath) {
+		functionPath = re.Split(functionPath, -1)[0]
+	}
+	parts := strings.Split(functionPath, ".")
+	functionName := parts[len(parts)-1]
+	return m.MethodCalled(functionName, arguments...)
+}
+
+// MethodCalled wraps mock.MethodCalled to handle return stacks
+func (m *Mock) MethodCalled(methodName string, arguments ...interface{}) mock.Arguments {
+	for i, op := range m.t.Operations {
+		if op.Name == methodName {
+			if len(op.ReturnStack) > 0 {
+				n := len(op.ReturnStack) - 1
+				op.call.ReturnArguments = mock.Arguments(op.ReturnStack[0])
+				op.ReturnStack = op.ReturnStack[n:]
+
+				m.t.Operations[i] = op
+			}
+			break
+		}
+	}
+
+	return m.Mock.MethodCalled(methodName, arguments...)
 }
 
 // BeginQuery returns an intialized values
